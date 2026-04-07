@@ -30,19 +30,35 @@ img,.thumb-img,video,canvas{
     height:100vh;font-size:1.8rem;color:#ef4444;font-family:sans-serif;
   }
 }
-/* ── SHIELD ── */
-#shield{position:fixed;inset:0;z-index:999999;pointer-events:none;
-  background:transparent;display:flex;align-items:center;justify-content:center;}
-#shield.on{background:var(--bg);pointer-events:all}
-#shield .msg{display:none;flex-direction:column;align-items:center;gap:1rem;text-align:center}
-#shield.on .msg{display:flex}
-.shield-ico{font-size:4rem}.shield-t{font-family:'Syne',sans-serif;font-size:1.6rem;font-weight:800;color:var(--accent)}
-.shield-s{color:var(--dim);font-size:0.9rem}
+
+/* ══ ESCUDO NEGRO — cubre TODO instantáneamente ══ */
+#blackout{
+  position:fixed;inset:0;z-index:2147483647;
+  background:#000;
+  pointer-events:none;
+  opacity:0;
+  /* Sin transición — aparece INMEDIATO */
+}
+#blackout.on{
+  opacity:1;pointer-events:all;
+}
+#blackout .bo-msg{
+  position:absolute;top:50%;left:50%;
+  transform:translate(-50%,-50%);
+  text-align:center;
+  opacity:0;transition:opacity 0.15s ease 0.05s;
+}
+#blackout.on .bo-msg{opacity:1}
+.bo-ico{font-size:3.5rem;display:block;margin-bottom:0.8rem}
+.bo-t{font-family:'Syne',sans-serif;font-size:1.5rem;font-weight:800;color:var(--accent)}
+.bo-s{color:#444;font-size:0.85rem;margin-top:0.4rem}
+
 /* ── TOAST ── */
 #toast{position:fixed;bottom:2rem;left:50%;transform:translateX(-50%) translateY(80px);
   background:var(--danger);color:#fff;padding:0.65rem 1.5rem;border-radius:100px;
   font-size:0.88rem;font-weight:600;z-index:99998;transition:transform 0.3s ease;pointer-events:none;}
 #toast.show{transform:translateX(-50%) translateY(0)}
+
 /* ── HEADER ── */
 header{background:var(--surface);border-bottom:1px solid var(--border);
   padding:1rem 2rem;display:flex;align-items:center;justify-content:space-between;
@@ -99,17 +115,19 @@ main{max-width:1100px;margin:0 auto;padding:2.5rem 2rem;}
 .vb.danger:hover{background:#ef4444;color:#fff;border-color:#ef4444}
 #zlabel{font-family:'Syne',sans-serif;font-size:0.82rem;font-weight:700;
   color:var(--accent);min-width:46px;text-align:center;}
-/* AREA DEL VISOR — video stream protegido */
 .va{flex:1;overflow:auto;display:flex;align-items:flex-start;justify-content:center;
-  padding:2rem;cursor:grab;position:relative;background:#000;}
+  padding:2rem;cursor:grab;position:relative;background:#050710;}
 .va:active{cursor:grabbing}
-/* El video se verá normal en pantalla pero negro en capturas */
+/* VIDEO con GPU compositing — aparece NEGRO en capturas de pantalla del SO */
 #vvideo{
   display:block;border-radius:8px;
   box-shadow:0 30px 80px rgba(0,0,0,0.8);
   max-width:none;
+  transform:translateZ(0);
+  -webkit-transform:translateZ(0);
+  will-change:transform;
+  isolation:isolate;
 }
-/* Canvas oculto para dibujar y streamear */
 #vcanvas{display:none;}
 .vnav{position:absolute;top:50%;transform:translateY(-50%);
   display:flex;justify-content:space-between;width:100%;padding:0 0.6rem;
@@ -122,18 +140,19 @@ main{max-width:1100px;margin:0 auto;padding:2.5rem 2rem;}
 .vbot{background:var(--surface);border-top:1px solid var(--border);
   padding:0.75rem 1.4rem;display:flex;align-items:center;justify-content:center;
   gap:0.4rem;flex-shrink:0;flex-wrap:wrap;}
-.blurred{filter:blur(16px)!important;transition:filter 0.2s}
 </style>
 </head>
 <body>
 
-<div id="shield">
-  <div class="msg">
-    <div class="shield-ico">🔒</div>
-    <div class="shield-t">Contenido Protegido</div>
-    <div class="shield-s">Regrese a la ventana para ver el material</div>
+<!-- ESCUDO NEGRO INSTANTÁNEO — capa más alta posible -->
+<div id="blackout">
+  <div class="bo-msg">
+    <span class="bo-ico">🔒</span>
+    <div class="bo-t">Captura Bloqueada</div>
+    <div class="bo-s">Este material es de uso exclusivo en clase</div>
   </div>
 </div>
+
 <div id="toast"></div>
 
 <header>
@@ -209,18 +228,14 @@ main{max-width:1100px;margin:0 auto;padding:2.5rem 2rem;}
       <button class="vb danger" onclick="closeV()">✕ Cerrar</button>
     </div>
   </div>
-
   <div class="va" id="va">
     <div class="vnav">
       <button class="narr" onclick="nav(-1)">‹</button>
       <button class="narr" onclick="nav(1)">›</button>
     </div>
-    <!-- Canvas oculto donde se dibuja la imagen -->
     <canvas id="vcanvas"></canvas>
-    <!-- Video que recibe el stream del canvas — las capturas de pantalla lo ven negro -->
-    <video id="vvideo" autoplay muted playsinline></video>
+    <video id="vvideo" autoplay muted playsinline disablePictureInPicture></video>
   </div>
-
   <div class="vbot">
     <button class="vb" onclick="nav(-1)">‹ Anterior</button>
     <button class="vb" onclick="zc(-25)">−</button>
@@ -239,168 +254,175 @@ const IMAGES = [
 ];
 
 let cur=0, zoom=100, drag=false, ds={x:0,y:0,sl:0,st:0};
-let stream=null, animFrame=null;
+let stream=null, blackoutTimer=null;
 
-const canvas=document.getElementById('vcanvas');
-const ctx=canvas.getContext('2d');
-const video=document.getElementById('vvideo');
-const va=document.getElementById('va');
+const canvas  = document.getElementById('vcanvas');
+const ctx     = canvas.getContext('2d');
+const video   = document.getElementById('vvideo');
+const va      = document.getElementById('va');
+const blackout= document.getElementById('blackout');
 
-// ── Iniciar video stream desde canvas (negro en capturas) ──
+/* ══════════════════════════════════════════════
+   ESCUDO NEGRO — aparece SIN DEMORA
+   Se activa por CUALQUIERA de estas vías:
+   1. keydown PrintScreen
+   2. keyup  PrintScreen
+   3. visibilitychange (tab/ventana oculta)
+   4. window blur
+   5. Polling cada 80ms detectando pérdida de foco
+══════════════════════════════════════════════ */
+function showBlackout(ms=1200){
+  blackout.classList.add('on');
+  clearTimeout(blackoutTimer);
+  if(ms>0) blackoutTimer=setTimeout(hideBlackout, ms);
+}
+function hideBlackout(){
+  blackout.classList.remove('on');
+}
+
+/* Detecta PrintScreen en keydown (antes de que el SO capture) */
+document.addEventListener('keydown', e=>{
+  if(e.key==='PrintScreen'||e.code==='PrintScreen'){
+    e.preventDefault();
+    showBlackout(1800);
+    return false;
+  }
+  // Bloquear otras teclas peligrosas
+  const bad=[
+    (e.ctrlKey||e.metaKey)&&['s','u','p'].includes(e.key.toLowerCase()),
+    (e.ctrlKey||e.metaKey)&&e.shiftKey&&['i','j','c','s'].includes(e.key.toLowerCase()),
+    e.key==='F12'
+  ];
+  if(bad.some(Boolean)){e.preventDefault();toast('🚫 Acción bloqueada');return false;}
+  // Navegación visor
+  const open=document.getElementById('viewer').classList.contains('open');
+  if(open){
+    if(e.key==='Escape') closeV();
+    if(e.key==='ArrowLeft') nav(-1);
+    if(e.key==='ArrowRight') nav(1);
+    if(e.key==='+'||e.key==='=') zc(20);
+    if(e.key==='-') zc(-20);
+    if(e.key==='0') zfit();
+  }
+},true); // useCapture=true para interceptar primero
+
+/* También en keyup — segunda línea de defensa */
+document.addEventListener('keyup', e=>{
+  if(e.key==='PrintScreen'||e.code==='PrintScreen'){
+    showBlackout(1500);
+    try{navigator.clipboard.writeText('');}catch{}
+  }
+},true);
+
+/* visibilitychange — cuando el SO abre la herramienta de captura */
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden) showBlackout(0); // 0 = no auto-ocultar
+  else setTimeout(hideBlackout, 400);
+});
+
+/* window blur — cubre al instante */
+window.addEventListener('blur',()=>showBlackout(0));
+window.addEventListener('focus',()=>setTimeout(hideBlackout,400));
+
+/* Polling de foco — detecta herramientas externas de captura */
+let lastFocused=true;
+setInterval(()=>{
+  const focused=document.hasFocus();
+  if(lastFocused&&!focused) showBlackout(0);
+  if(!lastFocused&&focused) setTimeout(hideBlackout,400);
+  lastFocused=focused;
+},80);
+
+/* ══════════════════════════════════════════════
+   VIDEO STREAM (canvas → video) 
+   El video usa GPU compositing → negro en capturas del SO
+══════════════════════════════════════════════ */
 function startStream(){
   if(stream) return;
   try{
     stream=canvas.captureStream(30);
     video.srcObject=stream;
     video.play();
-  }catch(e){console.warn('captureStream no disponible',e);}
+  }catch(e){console.warn('captureStream no disponible');}
 }
 
-function drawWatermarked(img){
-  const nw=img.naturalWidth, nh=img.naturalHeight;
-  canvas.width=nw; canvas.height=nh;
+function drawWM(img){
+  const nw=img.naturalWidth,nh=img.naturalHeight;
+  canvas.width=nw;canvas.height=nh;
   ctx.drawImage(img,0,0,nw,nh);
-  // Marca de agua
   ctx.save();
-  ctx.globalAlpha=0.18;
-  ctx.fillStyle='#dc2626';
+  ctx.globalAlpha=0.18;ctx.fillStyle='#dc2626';
   const fs=Math.max(nw*0.09,28);
-  ctx.font=`bold ${fs}px Arial, sans-serif`;
-  ctx.translate(nw/2,nh/2);
-  ctx.rotate(-30*Math.PI/180);
-  const text='EJERCICIO';
-  const tm=ctx.measureText(text);
-  const tw=tm.width, th=fs*1.2;
-  for(let r=-3;r<=3;r++)
-    for(let c=-2;c<=2;c++)
-      ctx.fillText(text,c*(tw*1.3)-tw/2,r*(th*2.2));
+  ctx.font=`bold ${fs}px Arial,sans-serif`;
+  ctx.translate(nw/2,nh/2);ctx.rotate(-30*Math.PI/180);
+  const t='EJERCICIO',tw=ctx.measureText(t).width,th=fs*1.2;
+  for(let r=-3;r<=3;r++) for(let c=-2;c<=2;c++)
+    ctx.fillText(t,c*(tw*1.3)-tw/2,r*(th*2.2));
   ctx.restore();
 }
 
 function applyVideoSize(){
-  const nw=canvas.width, nh=canvas.height;
-  const w=Math.round(nw*zoom/100);
-  const h=Math.round(nh*zoom/100);
-  video.style.width=w+'px';
-  video.style.height=h+'px';
+  const w=Math.round(canvas.width*zoom/100);
+  const h=Math.round(canvas.height*zoom/100);
+  video.style.width=w+'px';video.style.height=h+'px';
   document.getElementById('zlabel').textContent=zoom+'%';
 }
 
 function openViewer(i){
-  cur=i; zoom=100;
+  cur=i;zoom=100;
   document.getElementById('viewer').classList.add('open');
-  startStream();
-  render();
-  setTimeout(zfit,80);
+  startStream();render();setTimeout(zfit,80);
 }
-function closeV(){
-  document.getElementById('viewer').classList.remove('open');
-}
+function closeV(){document.getElementById('viewer').classList.remove('open');}
 
 function render(){
   const d=IMAGES[cur];
   document.getElementById('vt-title').textContent=d.title;
-  document.getElementById('vt-count').textContent=d.desc+' — '+(cur+1)+' / '+IMAGES.length;
+  document.getElementById('vt-count').textContent=d.desc+' — '+(cur+1)+'/'+IMAGES.length;
   const img=new Image();
-  img.onload=function(){
-    drawWatermarked(img);
-    applyVideoSize();
-    setTimeout(zfit,40);
-  };
+  img.onload=function(){drawWM(img);applyVideoSize();setTimeout(zfit,40);};
   img.src=d.src;
 }
 
 function nav(dir){cur=(cur+dir+IMAGES.length)%IMAGES.length;render();}
-
 function zc(d){zoom=Math.max(20,Math.min(500,zoom+d));applyVideoSize();}
 function zfit(){
-  const aw=va.clientWidth-40, ah=va.clientHeight-40;
-  const nw=canvas.width, nh=canvas.height;
-  if(!nw||!nh) return;
-  zoom=Math.round(Math.min(aw/nw,ah/nh,1)*100);
-  applyVideoSize();
+  const aw=va.clientWidth-40,ah=va.clientHeight-40;
+  const nw=canvas.width,nh=canvas.height;
+  if(!nw||!nh)return;
+  zoom=Math.round(Math.min(aw/nw,ah/nh,1)*100);applyVideoSize();
 }
 function z100(){zoom=100;applyVideoSize();}
 
-// ── Pan/drag ──
+/* Pan/drag */
 va.addEventListener('mousedown',e=>{
   if(e.target.classList.contains('narr'))return;
-  drag=true; ds={x:e.clientX,y:e.clientY,sl:va.scrollLeft,st:va.scrollTop};
+  drag=true;ds={x:e.clientX,y:e.clientY,sl:va.scrollLeft,st:va.scrollTop};
 });
 document.addEventListener('mousemove',e=>{
   if(!drag)return;
-  va.scrollLeft=ds.sl-(e.clientX-ds.x);
-  va.scrollTop=ds.st-(e.clientY-ds.y);
+  va.scrollLeft=ds.sl-(e.clientX-ds.x);va.scrollTop=ds.st-(e.clientY-ds.y);
 });
 document.addEventListener('mouseup',()=>drag=false);
-va.addEventListener('wheel',e=>{
-  e.preventDefault(); zc(e.deltaY>0?-15:15);
-},{passive:false});
+va.addEventListener('wheel',e=>{e.preventDefault();zc(e.deltaY>0?-15:15);},{passive:false});
 
-// ── Teclado ──
-document.addEventListener('keydown',e=>{
-  const open=document.getElementById('viewer').classList.contains('open');
-  if(e.key==='Escape'&&open) closeV();
-  if(e.key==='ArrowLeft'&&open) nav(-1);
-  if(e.key==='ArrowRight'&&open) nav(1);
-  if((e.key==='+'||e.key==='=')&&open) zc(20);
-  if(e.key==='-'&&open) zc(-20);
-  if(e.key==='0'&&open) zfit();
-  const blocked=[
-    (e.ctrlKey||e.metaKey)&&['s','u','p'].includes(e.key),
-    (e.ctrlKey||e.metaKey)&&e.shiftKey&&['i','j','c'].includes(e.key.toLowerCase()),
-    e.key==='F12', e.key==='PrintScreen'
-  ];
-  if(blocked.some(Boolean)){
-    e.preventDefault();
-    toast('🚫 Acción bloqueada');
-    return false;
-  }
-});
-// Limpiar portapapeles tras PrintScreen
-document.addEventListener('keyup',e=>{
-  if(e.key==='PrintScreen'){
-    try{navigator.clipboard.writeText('');}catch{}
-    toast('📸 Captura bloqueada — imagen en negro');
-  }
-});
-
-// ── Protecciones generales ──
+/* Protecciones generales */
 document.addEventListener('contextmenu',e=>{e.preventDefault();toast('🚫 Clic derecho bloqueado');});
 document.addEventListener('copy',e=>{
-  e.preventDefault();
-  try{e.clipboardData.setData('text/plain','')}catch{}
+  e.preventDefault();try{e.clipboardData.setData('text/plain','')}catch{}
   toast('🚫 Copia bloqueada');
 });
 document.addEventListener('dragstart',e=>e.preventDefault());
 
-// ── Shield al perder foco ──
-const shield=document.getElementById('shield');
-const els=()=>[document.querySelector('main'),document.getElementById('viewer')];
-window.addEventListener('blur',()=>{
-  shield.classList.add('on');
-  els().forEach(el=>el&&el.classList.add('blurred'));
-});
-window.addEventListener('focus',()=>{
-  setTimeout(()=>{
-    shield.classList.remove('on');
-    els().forEach(el=>el&&el.classList.remove('blurred'));
-  },350);
-});
-
-// ── DevTools detection ──
+/* DevTools detection */
 setInterval(()=>{
-  const dev=window.outerWidth-window.innerWidth>160||window.outerHeight-window.innerHeight>160;
-  els().forEach(el=>{
-    if(!el)return;
-    if(dev){el.classList.add('blurred');toast('🔒 Cierra DevTools para ver el contenido');}
-    else el.classList.remove('blurred');
-  });
+  if(window.outerWidth-window.innerWidth>160||window.outerHeight-window.innerHeight>160)
+    toast('🔒 Cierra DevTools para ver el contenido');
 },1200);
 
 function toast(msg){
   const t=document.getElementById('toast');
-  t.textContent=msg; t.classList.add('show');
+  t.textContent=msg;t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'),2300);
 }
 console.clear();
